@@ -1,0 +1,112 @@
+# jcgraph source/sink catalog for taint-style vulnerability hunting.
+#
+# Format (whitespace-separated, 3 columns):  <kind> <category> <owner>#<name>
+#   kind     = sink | source
+#   category = free-form tag used for grouping/filtering
+#   owner    = JVM internal name (slashes); name = method name (no descriptor)
+#
+# Matching is exact on method name (owner#name followed by '(' in the call target),
+# so all overloads of a name match but sibling names do not. The owner is the
+# DECLARED type at the call site (what ASM records), which is exactly how the
+# call graph stores CALLS targets — interface owners like HttpServletRequest match.
+#
+# Lines starting with '#' and blank lines are ignored. Edit freely.
+
+# ----------------------------------------------------------------- SINKS
+
+# OS command execution
+sink  exec  java/lang/Runtime#exec
+sink  exec  java/lang/ProcessBuilder#start
+sink  exec  java/lang/ProcessBuilder#command
+
+# Java deserialization
+sink  deserialize  java/io/ObjectInputStream#readObject
+sink  deserialize  java/io/ObjectInputStream#readUnshared
+sink  deserialize  com/thoughtworks/xstream/XStream#fromXML
+sink  deserialize  com/alibaba/fastjson/JSON#parseObject
+sink  deserialize  com/alibaba/fastjson/JSON#parse
+sink  deserialize  com/alibaba/fastjson2/JSON#parseObject
+sink  deserialize  org/yaml/snakeyaml/Yaml#load
+
+# Reflection / dynamic loading
+sink  reflect  java/lang/reflect/Method#invoke
+sink  reflect  java/lang/Class#forName
+sink  reflect  java/lang/Class#newInstance
+sink  reflect  java/lang/reflect/Constructor#newInstance
+sink  reflect  java/lang/ClassLoader#loadClass
+sink  reflect  java/lang/ClassLoader#defineClass
+
+# JNDI injection
+sink  jndi  javax/naming/Context#lookup
+sink  jndi  javax/naming/InitialContext#lookup
+sink  jndi  javax/naming/directory/InitialDirContext#lookup
+
+# SQL execution (flag for string-concatenation review)
+sink  sql  java/sql/Statement#execute
+sink  sql  java/sql/Statement#executeQuery
+sink  sql  java/sql/Statement#executeUpdate
+sink  sql  java/sql/Statement#executeLargeUpdate
+sink  sql  java/sql/Statement#addBatch
+sink  sql  java/sql/Connection#prepareStatement
+sink  sql  java/sql/Connection#prepareCall
+
+# Filesystem / path traversal
+sink  file  java/io/FileInputStream#<init>
+sink  file  java/io/FileOutputStream#<init>
+sink  file  java/io/RandomAccessFile#<init>
+sink  file  java/nio/file/Files#newInputStream
+sink  file  java/nio/file/Files#newOutputStream
+sink  file  java/nio/file/Files#write
+sink  file  java/nio/file/Files#delete
+sink  file  java/nio/file/Files#readAllBytes
+
+# SSRF / outbound requests
+sink  ssrf  java/net/URL#openConnection
+sink  ssrf  java/net/URL#openStream
+sink  ssrf  java/net/http/HttpClient#send
+sink  ssrf  org/apache/http/client/HttpClient#execute
+
+# Expression / script injection
+sink  expr  javax/script/ScriptEngine#eval
+sink  expr  java/lang/reflect/Method#invoke
+sink  expr  ognl/Ognl#getValue
+sink  expr  org/springframework/expression/ExpressionParser#parseExpression
+
+# XML external entity (XXE)
+sink  xxe  javax/xml/parsers/DocumentBuilder#parse
+sink  xxe  javax/xml/parsers/SAXParser#parse
+sink  xxe  javax/xml/stream/XMLInputFactory#createXMLStreamReader
+sink  xxe  org/dom4j/io/SAXReader#read
+
+# Server-side template / redirect
+sink  redirect  javax/servlet/http/HttpServletResponse#sendRedirect
+sink  redirect  jakarta/servlet/http/HttpServletResponse#sendRedirect
+
+# ----------------------------------------------------------------- SOURCES
+
+# Servlet request (untrusted HTTP input) — javax + jakarta namespaces
+source  http  javax/servlet/http/HttpServletRequest#getParameter
+source  http  javax/servlet/http/HttpServletRequest#getParameterValues
+source  http  javax/servlet/http/HttpServletRequest#getParameterMap
+source  http  javax/servlet/http/HttpServletRequest#getParameterNames
+source  http  javax/servlet/http/HttpServletRequest#getHeader
+source  http  javax/servlet/http/HttpServletRequest#getHeaders
+source  http  javax/servlet/http/HttpServletRequest#getQueryString
+source  http  javax/servlet/http/HttpServletRequest#getInputStream
+source  http  javax/servlet/http/HttpServletRequest#getReader
+source  http  javax/servlet/http/HttpServletRequest#getCookies
+source  http  javax/servlet/http/HttpServletRequest#getRequestURI
+source  http  javax/servlet/http/HttpServletRequest#getRequestURL
+source  http  javax/servlet/ServletRequest#getParameter
+source  http  jakarta/servlet/http/HttpServletRequest#getParameter
+source  http  jakarta/servlet/http/HttpServletRequest#getParameterValues
+source  http  jakarta/servlet/http/HttpServletRequest#getParameterMap
+source  http  jakarta/servlet/http/HttpServletRequest#getHeader
+source  http  jakarta/servlet/http/HttpServletRequest#getHeaders
+source  http  jakarta/servlet/http/HttpServletRequest#getQueryString
+source  http  jakarta/servlet/http/HttpServletRequest#getInputStream
+source  http  jakarta/servlet/http/HttpServletRequest#getReader
+source  http  jakarta/servlet/http/HttpServletRequest#getCookies
+
+# Network input
+source  net  java/net/Socket#getInputStream

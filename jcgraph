@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# jcgraph launcher. Prefers a bundled JRE next to this script (self-contained),
+# falls back to `java` on PATH. Put this folder on PATH, then run e.g.
+#   jcgraph index path/to/proj
+set -e
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$DIR/jre/bin/java" ]; then
+  exec "$DIR/jre/bin/java" -jar "$DIR/target/jcgraph.jar" "$@"
+else
+  exec java -jar "$DIR/target/jcgraph.jar" "$@"
+fi

@@ -1,0 +1,16 @@
+target/
+dependency-reduced-pom.xml
+jre/
+dist/
+.jcgraph/
+.omc/
+*.db
+*.db.work/
+*.db-wal
+*.db-shm
+.idea/
+*.iml
+.omc/
+.vscode/
+案例/
+参考/
