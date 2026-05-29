@@ -322,4 +322,7 @@ map and extension recipes.
 
 ## License
 
-(unspecified)
+[PolyForm Noncommercial License 1.0.0](LICENSE.md) — free for any
+**noncommercial** purpose (personal, research, education, evaluation, nonprofit
+and government use). **Commercial use is not permitted** under this license;
+contact the author for a commercial license.

@@ -12,6 +12,15 @@
     <name>jcgraph</name>
     <description>Unified Java code graph: jar/war/class/jmod/java -&gt; one SQLite graph with navigation + grep</description>
 
+    <licenses>
+        <license>
+            <name>PolyForm Noncommercial License 1.0.0</name>
+            <url>https://polyformproject.org/licenses/noncommercial/1.0.0</url>
+            <comments>Free for noncommercial use only; commercial use is not permitted.</comments>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
