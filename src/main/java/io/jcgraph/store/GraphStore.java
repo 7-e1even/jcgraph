@@ -69,6 +69,7 @@ public class GraphStore implements AutoCloseable {
                 st.execute("PRAGMA busy_timeout=5000");
             }
             GraphStore store = new GraphStore(c);
+            store.assertSchemaCompatible(dbPath);
             store.applySchema();
             return store;
         } catch (SQLException e) {
@@ -95,6 +96,67 @@ public class GraphStore implements AutoCloseable {
             } catch (SQLException e) {
                 throw new RuntimeException("cannot apply schema stmt: " + s, e);
             }
+        }
+    }
+
+    /**
+     * Fail fast with an actionable message when an existing DB predates the
+     * current schema (e.g. it was built before the {@code synthetic} column
+     * existed). Without this, {@link #applySchema()} dies on
+     * {@code CREATE INDEX ... ON nodes(synthetic)} with a raw "no such column"
+     * SQLite stack trace that gives the user no idea what to do.
+     *
+     * <p>We deliberately do NOT silently {@code ALTER TABLE ADD COLUMN} the
+     * missing column in: the older index never computed synthetic flags, so
+     * sink/overview/search queries (which hide synthetic members) would quietly
+     * leak compiler-generated junk into an audit. Rebuilding the index is the
+     * honest fix, so we point the user straight at it.
+     */
+    private void assertSchemaCompatible(String dbPath) {
+        if (!tableExists("nodes")) {
+            return; // fresh DB — applySchema() will create the table correctly
+        }
+        if (hasColumn("nodes", "synthetic")) {
+            return; // already on the current schema
+        }
+        String input = null;
+        try {
+            input = getMeta("input");
+        } catch (RuntimeException ignored) {
+            // meta table missing/unreadable on a very old DB — fall back to the generic hint
+        }
+        String rebuild = (input != null && !input.isEmpty() && !"-".equals(input))
+                ? "rebuild it:  jcgraph index " + input
+                : "delete it and re-index:  jcgraph index <input>";
+        throw new IllegalStateException(
+                "jcgraph: index DB '" + dbPath + "' was built by an older jcgraph and is missing "
+                + "schema columns (nodes.synthetic). It cannot be queried as-is - " + rebuild + ".");
+    }
+
+    private boolean tableExists(String name) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    private boolean hasColumn(String table, String column) {
+        // PRAGMA args can't be bound; `table` is a fixed internal literal here.
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (rs.next()) {
+                if (column.equalsIgnoreCase(rs.getString("name"))) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (SQLException e) {
+            return false;
         }
     }
 
