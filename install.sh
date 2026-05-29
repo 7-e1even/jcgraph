@@ -157,10 +157,20 @@ download_release() {
 
   if [ -z "$TAG" ]; then
     echo "[jcgraph] resolving latest release of $REPO ..."
-    TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-            | grep '"tag_name"' | head -1 \
-            | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
-    [ -n "$TAG" ] || { echo "[jcgraph] no releases found for $REPO (publish one first, or pass --version)." >&2; exit 1; }
+    # Capture without letting curl's non-zero (e.g. 404 = no releases) abort the
+    # script under `set -e`/pipefail, so the actionable message below is reached.
+    api="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)"
+    TAG="$(printf '%s' "$api" | grep '"tag_name"' | head -1 \
+            | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+    if [ -z "$TAG" ]; then
+      name="${REPO##*/}"
+      echo "[jcgraph] $REPO has no published release yet (GitHub returned no 'latest')." >&2
+      echo "          Fix it one of two ways:" >&2
+      echo "          1) Publish a release (tag like v0.1.0) with the platform bundle attached." >&2
+      echo "          2) Build from source on this machine (needs a JDK + Maven):" >&2
+      echo "               git clone https://github.com/$REPO && cd $name && ./install.sh --build" >&2
+      exit 1
+    fi
   fi
   ver="${TAG#v}"
   asset="jcgraph-${ver}-${uos}-${uarch}.tar.gz"
