@@ -1,0 +1,111 @@
+name: release
+
+# Builds the self-contained, per-platform bundles on native runners and uploads
+# them to the GitHub release for the tag — so no developer machine (Mac/Linux)
+# is needed to cut a release.
+#
+#   - Push a tag like `v0.1.0`  -> builds all platforms, creates/updates that release.
+#   - Or run manually (Actions tab -> "release" -> Run workflow), giving an existing
+#     tag (default v0.1.0) to build for and upload to.
+#
+# Asset names match what install.sh / install.ps1 download:
+#   jcgraph-<ver>-macos-arm64.tar.gz   (macOS Apple Silicon)
+#   jcgraph-<ver>-macos-x86_64.tar.gz  (macOS Intel)
+#   jcgraph-<ver>-linux-x86_64.tar.gz  (Linux)
+#   jcgraph-<ver>-windows-full.zip     (Windows, bundled JRE)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build for and upload to (e.g. v0.1.0)'
+        required: true
+        default: v0.1.0
+
+jobs:
+  bundle:
+    name: bundle (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,   label: macos-arm64,  artifact: dist/jcgraph-*-macos-arm64.tar.gz }
+          - { os: macos-13,       label: macos-x86_64, artifact: dist/jcgraph-*-macos-x86_64.tar.gz }
+          - { os: ubuntu-latest,  label: linux-x86_64, artifact: dist/jcgraph-*-linux-x86_64.tar.gz }
+          - { os: windows-latest, label: windows,      artifact: dist/jcgraph-*-windows-full.zip }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # macOS / Linux: package.sh runs mvn + jdeps + jlink and tars the bundle.
+      - name: Build self-contained bundle (macOS / Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          chmod +x package.sh 2>/dev/null || true
+          ./package.sh --build
+          ls -la dist/*.tar.gz
+
+      # Windows: package.ps1 expects a prebuilt jre/, so jlink one first, then feed it in.
+      - name: Build self-contained bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          mvn -q clean package -DskipTests
+          if (-not (Test-Path target\jcgraph.jar)) { throw "build produced no jar" }
+          $mods = (& "$env:JAVA_HOME\bin\jdeps.exe" --print-module-deps --ignore-missing-deps --multi-release base target\jcgraph.jar)
+          $mods = ($mods | Select-Object -Last 1).Trim()
+          Write-Host "jlink modules: $mods"
+          & "$env:JAVA_HOME\bin\jlink.exe" --add-modules $mods `
+              --strip-debug --no-header-files --no-man-pages --compress=zip-6 `
+              --output build-jre
+          if (-not (Test-Path build-jre\bin\java.exe)) { throw "jlink produced no runtime" }
+          ./package.ps1 -JreDir "$PWD\build-jre"
+          Get-ChildItem dist\*.zip
+
+      # Prove the bundled runtime actually launches on this platform.
+      - name: Smoke-test bundled JRE (macOS / Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          jre=$(echo dist/*/jre/bin/java | awk '{print $1}')
+          "$jre" -version
+      - name: Smoke-test bundled JRE (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $java = Get-ChildItem dist\*\jre\bin\java.exe | Select-Object -First 1
+          & $java.FullName -version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.label }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  publish:
+    name: upload to release
+    needs: bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: List collected bundles
+        run: ls -la artifacts
+      - name: Attach bundles to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: artifacts/*
+          fail_on_unmatched_files: true
