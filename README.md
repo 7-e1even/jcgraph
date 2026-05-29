@@ -24,30 +24,48 @@ consumer (a human in an IDE). jcgraph is built for a different shape of problem:
 
 ## Install
 
-Three ways to get a `jcgraph` command, from least to most self-contained.
+Pick the simplest that fits.
 
-### 1. One-shot install (you have a JDK + Maven)
+### 1. One command (remote — downloads a prebuilt self-contained release)
 
-Builds the jar and puts `jcgraph` on your PATH so it works from any directory:
+No JDK, no Maven, no clone. Grabs the latest release's self-contained bundle
+(private JRE — **no system Java required**) and puts `jcgraph` on your PATH:
 
 ```powershell
-.\install.ps1            # Windows — builds, then registers this folder on the user PATH
+irm https://raw.githubusercontent.com/7-e1even/jcgraph/main/install.ps1 | iex   # Windows
 ```
 ```bash
-./install.sh             # macOS / Linux — builds, then adds this folder to PATH (via your shell rc)
+curl -fsSL https://raw.githubusercontent.com/7-e1even/jcgraph/main/install.sh | bash   # macOS / Linux
+```
+
+Installs to `%LOCALAPPDATA%\Programs\jcgraph` (Windows) / `~/.jcgraph` (macOS /
+Linux); override with `-Dir` / `--dir` or `$JCGRAPH_HOME`. Re-run to update. Open
+a new terminal afterward, then: `jcgraph index app.jar`. Requires a published
+GitHub release carrying the matching per-platform bundle (build those with the
+packaging scripts below).
+
+### 2. From source (you have a JDK + Maven)
+
+Run the SAME installer from a checkout — it auto-detects the source tree and
+builds the jar instead of downloading (force with `--build` / `-Build`), then puts
+`jcgraph` on your PATH:
+
+```powershell
+.\install.ps1            # in a checkout: builds + registers this folder on the user PATH
+```
+```bash
+./install.sh             # in a checkout: builds + adds this folder to PATH (via your shell rc)
 ```
 
 Re-run anytime to update (it `git pull`s first if this is a checkout). On macOS,
 `install.sh` auto-detects a JDK via `/usr/libexec/java_home` and
 `/Library/Java/JavaVirtualMachines`; pass `-JavaHome <jdk>` / `--java-home <jdk>`
-if none is found. Both installers register the folder on PATH (skip with
-`-SkipPath` / `--skip-path`) — `install.sh` appends to the rc for your shell
-(`~/.zshrc`, `~/.bash_profile`, …). Open a new terminal afterward, then:
-`jcgraph index app.jar`.
+if none is found. Both register the folder on PATH (skip with `-SkipPath` /
+`--skip-path`). Open a new terminal afterward, then: `jcgraph index app.jar`.
 
-### 2. Self-contained bundle (the target machine has no Java)
+### 3. Build the self-contained bundles (to attach to a release)
 
-`dist/jcgraph-<ver>-windows-full/` ships a private JRE (currently Java 8) next to
+These bundles are what method 1 downloads. `dist/jcgraph-<ver>-windows-full/` ships a private JRE (currently Java 8) next to
 the jar. Unzip it, add the folder to PATH, and `jcgraph` runs with **no system
 Java required** — the launcher prefers the bundled `jre/` and only falls back to
 system `java` if it's absent.
@@ -71,7 +89,7 @@ bundle built on one OS/arch will not run on another. If a downloaded macOS bundl
 is blocked by Gatekeeper, clear the quarantine flag once:
 `xattr -dr com.apple.quarantine jcgraph-<ver>-macos-<arch>`.
 
-### 3. Manual
+### 4. Manual
 
 No install step — call the jar directly (see **Build**):
 
