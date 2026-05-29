@@ -73,9 +73,17 @@ if [ -z "$MODS" ]; then
   echo "Inspect with: '$JHOME/bin/jdeps' --print-module-deps '$JAR', then re-run as MODS=<list> ./package.sh" >&2
   exit 1
 fi
-echo "[package] jlink modules: $MODS"
+# --compress=2 was deprecated for removal in JDK 21 (replaced by --compress=zip-N).
+# Pick a flag valid for the running jlink so this stays correct on JDK 11..25+.
+JL_MAJOR="$("$JHOME/bin/jlink" --version 2>/dev/null | sed -E 's/^([0-9]+).*/\1/')"
+if [ -n "$JL_MAJOR" ] && [ "$JL_MAJOR" -ge 21 ] 2>/dev/null; then
+  COMPRESS="--compress=zip-6"
+else
+  COMPRESS="--compress=2"
+fi
+echo "[package] jlink modules: $MODS ($COMPRESS)"
 "$JHOME/bin/jlink" --add-modules "$MODS" \
-  --strip-debug --no-header-files --no-man-pages --compress=2 \
+  --strip-debug --no-header-files --no-man-pages $COMPRESS \
   --output "$VD/jre"
 
 tar -C "$DIST" -czf "$DIST/$NAME.tar.gz" "$NAME"

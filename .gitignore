@@ -12,5 +12,6 @@ dist/
 *.iml
 .omc/
 .vscode/
+.claude/
 案例/
 参考/

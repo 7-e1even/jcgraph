@@ -1,238 +1,307 @@
 # jcgraph
 
-统一的 Java 代码图谱。把 **jar / war / class / jmod / java**(以及目录、fat-jar、嵌套
-war 依赖)索引进**一个 SQLite 图**:核心两张表(`nodes`、`edges`),外加 `strings`
-表做廉价的字面量 grep。在此之上提供代码导航与全文检索。
+**A unified Java code graph for vulnerability hunting at scale.**
 
-它融合了四个思路:
+jcgraph indexes JVM bytecode (jar / war / class / jmod) **and** Java source into
+one queryable SQLite graph — every class, method, field, and call edge. It is
+built for an AI agent to triage a large, unfamiliar codebase: locate entry
+points, enumerate dangerous sink call sites, trace reachable paths, and verify
+data flow on a specific chain.
 
-- **ASM** 字节码前端 → 精确的描述符 + 调用 / 继承 / 实现边(类似 *tabby*)
-- **JavaParser** 源码前端 → `.java` 的精确位置 + 可读的方法体
-- **CFR** 反编译器,输出直接在内存中捕获,为字节码按需提供内容(类似 *jar-analyzer*
-  的 FernFlower,但兼容 Java 8)。方法体通过重新解析反编译文本来定位。
-- 通用的 `(nodes, edges, kind)` schema + 读文件切片取内容(类似 *codegraph*)
+## Why
 
-## 一张图看懂设计
+Most code-analysis tools target one input form (source *or* bytecode) and one
+consumer (a human in an IDE). jcgraph is built for a different shape of problem:
 
+- **Input is messy.** A real audit target is a pile of jars — third-party libs,
+  shaded deps, app code — plus maybe some source. jcgraph ingests all of it and
+  converges both frontends on the same node ids.
+- **Consumer is an agent.** Output is compact, structured, and re-feedable. Every
+  result line leads with a stable id you can paste straight into the next query,
+  and high-volume tools emit JSON.
+- **Scale is large.** A ~600K-node / 1.7M-edge graph from an 82 MB jar indexes in
+  ~13 min and then answers queries in milliseconds.
+
+## Install
+
+Three ways to get a `jcgraph` command, from least to most self-contained.
+
+### 1. One-shot install (you have a JDK + Maven)
+
+Builds the jar and puts `jcgraph` on your PATH so it works from any directory:
+
+```powershell
+.\install.ps1            # Windows — builds, then registers this folder on the user PATH
 ```
-        jar/war/jmod ─解压─┐
-                           ├ .class ─ ASM ──→ nodes/edges/strings(origin=bytecode,精确调用)
-        .class ────────────┘
-        .java ─ JavaParser ────────────────→ nodes/edges        (origin=source,精确位置)
-                                                     │
-   混合物化(materialize): 每个 .class ─ CFR 反编译 → <work>/.sources/<internal>.java
-                          重新解析 → 把字节码节点的位置 enrich 到指向该 .java
-                                                     │
-                                          一个 SQLite 图(nodes/edges/strings)
-                                                     │
-   导航:  图 → 坐标 ──→ 读 .java + 按行号切片(统一)
-   grep:  strings 表(常量池) + 扫描每个 .java(原生 + 反编译)
-```
-
-**混合模型:** ASM 始终是图的事实来源(精确描述符 + 调用边——反编译在这两点上不可靠),
-而反编译出的 `.java` 镜像是一等的内容 + grep 层,使导航和检索都统一作用在 `.java` 上。
-图里只存**坐标 + 关系**;方法体存在 `.java` 文件里。
-
-## 构建
-
 ```bash
-mvn -q clean package
-# -> target/jcgraph.jar(shaded、可直接运行;运行需 JDK/JRE 8+)
+./install.sh             # macOS / Linux — builds, then adds this folder to PATH (via your shell rc)
 ```
 
-> 构建需要 **JDK**(PATH 上的 `java` 可能是不带 `javac` 的 JRE)。若 `mvn package`
-> 报 *"No compiler is provided"*,把 `JAVA_HOME` 指向一个 JDK(JDK 17 可用;JDK 25
-> 可能已移除 `--source 8` 支持)。构建产物 jar 仍可在 JRE 8 上运行。
+Re-run anytime to update (it `git pull`s first if this is a checkout). On macOS,
+`install.sh` auto-detects a JDK via `/usr/libexec/java_home` and
+`/Library/Java/JavaVirtualMachines`; pass `-JavaHome <jdk>` / `--java-home <jdk>`
+if none is found. Both installers register the folder on PATH (skip with
+`-SkipPath` / `--skip-path`) — `install.sh` appends to the rc for your shell
+(`~/.zshrc`, `~/.bash_profile`, …). Open a new terminal afterward, then:
+`jcgraph index app.jar`.
 
-架构、数据模型,以及如何扩展(新增格式 / 节点类型 / MCP 工具 / 替换反编译器),
-见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+### 2. Self-contained bundle (the target machine has no Java)
 
-## 使用
+`dist/jcgraph-<ver>-windows-full/` ships a private JRE (currently Java 8) next to
+the jar. Unzip it, add the folder to PATH, and `jcgraph` runs with **no system
+Java required** — the launcher prefers the bundled `jre/` and only falls back to
+system `java` if it's absent.
 
+Produce the bundles with the packaging scripts:
+
+```powershell
+.\package.ps1            # -> dist\jcgraph-<ver>-windows-full.zip  (jar + Windows JRE, self-contained)
+                         #    dist\jcgraph-<ver>-system.zip        (jar + launchers only, needs system Java)
+```
 ```bash
-# 从任意输入构建索引
-java -jar target/jcgraph.jar index path/to/app.jar
-java -jar target/jcgraph.jar index path/to/classes-dir
-java -jar target/jcgraph.jar index path/to/src        # .java 源码
-
-# 导航
-java -jar target/jcgraph.jar search  parseConfig
-java -jar target/jcgraph.jar def     MyClass
-java -jar target/jcgraph.jar callers 'M:com/example/Foo#bar(Ljava/lang/String;)V'
-java -jar target/jcgraph.jar callees doWork
-java -jar target/jcgraph.jar source  com.example.Foo      # 字节码会反编译后输出
-java -jar target/jcgraph.jar method  com.example.Foo bar  # 只输出方法体
-java -jar target/jcgraph.jar grep    Runtime.exec         # 常量池 + 所有 .java(含反编译)
-
-# 漏洞挖掘(详见下文「漏洞挖掘」一节)
-java -jar target/jcgraph.jar sinks                        # 危险调用点(exec/sql/反序列化/...)
-java -jar target/jcgraph.jar sources                      # 不可信输入读取点
-java -jar target/jcgraph.jar trace  'M:com/x/Foo#bar()V'  # 反向调用链(调用可达)
-java -jar target/jcgraph.jar taint  [category]            # 污点验证过的 source->sink 数据流
+./package.sh             # -> dist/jcgraph-<ver>-<os>-<arch>.tar.gz  (jlink runtime; needs JDK 11+)
+./package.sh --system    # also emit a no-JRE tarball (any OS)
 ```
 
-混合模式(默认)下,`index` 会把每个字节码类反编译成 `<work>/.sources/` 下的 `.java`
-镜像,于是 `grep` 统一扫描所有 `.java` 文本(原生 + 反编译),`source` / `method`
-就是普通的读文件。加 `--no-materialize` 可在索引时跳过反编译;此时内容回退到按需反编译,
-`grep` 只覆盖常量池 `strings` 表 + 原生源码。
+The Windows full bundle copies its runtime from a `jre/` folder in the repo root.
+`package.sh` builds a minimal runtime for the **current** OS/arch with `jlink`, so
+run it **on the target platform**: an Apple-Silicon Mac emits
+`jcgraph-<ver>-macos-arm64.tar.gz`, an Intel Mac emits `...-macos-x86_64`, and a
+bundle built on one OS/arch will not run on another. If a downloaded macOS bundle
+is blocked by Gatekeeper, clear the quarantine flag once:
+`xattr -dr com.apple.quarantine jcgraph-<ver>-macos-<arch>`.
 
-所有命令都接受 `--db <path>`(默认 `.jcgraph/index.db`,这样 jcgraph 生成的一切都
-收拢在单个 `.jcgraph/` 目录里,类似 `.git/`)。`index` 还接受 `--work <dir>` 指定
-解压出的 `.class` 缓存目录(默认 `<db>.work`,即 `.jcgraph/index.db.work/`,反编译出的
-`.java` 镜像在其 `.sources/` 子目录下)。
+### 3. Manual
 
-## 反编译加速(并行)
-
-`index` 的物化阶段(对每个类做 CFR 反编译 + JavaParser 解析)是 CPU 密集的,且每个顶层类
-彼此独立,因此默认会**按 CPU 核数并行**跑。日志会打印实际使用的线程数:
+No install step — call the jar directly (see **Build**):
 
 ```
-[materialize] decompiling 128324 classes across 12 threads (resume: reusing existing .java)
+java -jar target/jcgraph.jar <command> ...
 ```
 
-线程数可手动指定(优先级:系统属性 > 环境变量 > CPU 核数):
+## Build
 
-```bash
-# 环境变量(能穿透 jcgraph 启动脚本)
-JCGRAPH_THREADS=16 java -jar target/jcgraph.jar index path/to/app.jar
+jcgraph needs a **JDK** (not just a JRE — the build runs `javac`):
 
-# 或系统属性
-java -Djcgraph.materialize.threads=16 -jar target/jcgraph.jar index path/to/app.jar
+```
+mvn package
 ```
 
-## 中断续跑(增量)
+This produces `target/jcgraph.jar`, a self-contained shaded executable jar. The
+build targets **Java 8 bytecode**, so the jar runs on **Java 8+**:
 
-反编译出的 `.java` 会**即时落盘**(原子写:先写 `.tmp` 再原子改名,中断只会留下无害的
-`.tmp`,绝不会产生半截的 `.java`)。因此索引中途被 `Ctrl+C` 后,**用同一条命令、同一个
-`--work` 目录重跑即可续上**:
-
-```bash
-java -jar target/jcgraph.jar index path/to/app.jar     # 跑到一半 Ctrl+C
-java -jar target/jcgraph.jar index path/to/app.jar     # 再跑:已反编译的类秒过,只补没做完的
+```
+java -jar target/jcgraph.jar <command> ...
 ```
 
-续跑规则:
+> ASM 9.6 reads classfiles up to Java 21. Classes compiled for a newer version
+> are skipped silently during indexing — bump the `asm.version` property and
+> rebuild to support newer targets.
 
-- `.sources/` 里已存在的有效 `.java` 直接复用,**跳过最耗时的 CFR 反编译**;
-- 上次反编译失败留下的占位文件(`// decompile failed...`)不会被复用,会**自动重试**;
-- 结束时打印汇总,一眼看出省了多少:
-  `[materialize] complete: 128324 classes (125700 reused from a previous run, 2624 freshly decompiled)`
+## Index
 
-> 注意:续跑加速的是**重跑**,而非让中断当下的数据库立即可查。写库是在整个索引流程跑完时
-> **一次性提交**的,所以中断后数据库仍为空,需要再完整跑一次才能查询——但这次重跑会跳过
-> 反编译这个大头(`collect` / `extract` / 写库照常,这几步相对快)。
-
-## 漏洞挖掘(source/sink + 调用图解析)
-
-面向「在大规模代码里做安全审计」的场景,jcgraph 在精确调用图之上提供污点式(taint)
-分析的基础能力。**核心是确定性、高召回的结构分析,不依赖向量/语义近似。**
-
-**调用图多态解析。** 原始字节码调用图记录的是调用点的**声明类型**,接口/抽象方法调用
-追不到具体实现。索引时新增一个全局链接阶段,基于继承图 + 方法签名生成 `OVERRIDES` 边,
-于是 `callers` / `callees` 在查询时会**自动展开**:
-
-```bash
-java -jar target/jcgraph.jar callees 'M:com/x/Engine#run(...)'
-#   callees of ... (9 direct, 24 via overrides)
-#   ...  com/x/Valve#invoke ...                 <- 接口目标
-#   ...  com/x/StandardHostValve#invoke  [virtual impl]   <- 展开出的实现
+```
+java -jar jcgraph.jar index <input> [--db <path>] [--work <dir>] [--no-materialize]
 ```
 
-`[virtual impl]`(callees 方向)和 `[virtual]`(callers 方向)标记的就是经 override 展开
-得到的多态目标。这是声音的过近似(宁可多列也不漏),正是污点分析需要的方向。
+- `<input>` — a jar, war, jmod, `.class`, `.java`, or a directory of any mix.
+- `--db` — where to write the SQLite graph (default `.jcgraph/index.db`).
+- `--work` — scratch dir for decompiled sources (default `<db>.work`).
+- `--no-materialize` — skip CFR decompilation (graph only, no readable bodies;
+  source is then resolved by decompile-on-demand at query time).
 
-**source/sink 目录。** 内置一份危险 API 清单(`src/main/resources/sinks.txt`,可用
-`-Djcgraph.rules=<path>` 覆盖),覆盖命令执行、SQL、反序列化、反射、JNDI、文件、SSRF、
-XXE、表达式注入等 sink,以及 `HttpServletRequest#getParameter` 等不可信输入 source。
-
-```bash
-java -jar target/jcgraph.jar sinks            # 列出所有命中的危险调用点(按分类)
-java -jar target/jcgraph.jar sinks exec       # 只看某一类(exec/sql/deserialize/...)
-java -jar target/jcgraph.jar sources          # 列出所有不可信输入读取点
+```
+java -jar jcgraph.jar sync   [--db <path>] [--work <dir>] [--no-materialize]
+java -jar jcgraph.jar status [--db <path>]
 ```
 
-**反向可达 trace(污点链)。** 从一个方法(通常是命中 sink 的方法)沿调用图**反向 BFS**
-走到入口,展开过 `OVERRIDES`,并把「自身读取了不可信输入」的方法标记为 `[source]`:
+`sync` checks whether the input changed since the last run and, if so, **rebuilds
+the index in place** (it is not yet a file-level incremental update). `status`
+prints the recorded input, work dir, node/edge counts, file groups, and any
+duplicate-class report.
 
-```bash
-java -jar target/jcgraph.jar trace 'M:com/x/CGIServlet$CGIRunner#run()V'
-#   [path 1] depth 2
-#     com/x/CGIServlet#doGet(HttpServletRequest, ...)  [source]
-#       -> com/x/CGIServlet$CGIRunner#run()  <<< sink
+## Query
+
+The CLI mirrors the MCP tools one-to-one. Every command takes `--db`;
+high-volume commands also accept `--scope <pkg/prefix>` to cut library noise
+(slashes or dots both work: `--scope com/acme` or `--scope com.acme`) and many
+support `--json` for structured output.
+
+### Triage flow
+
+```
+jcgraph overview                              # attack surface: entry kinds + sink histogram
+jcgraph sinks <category> --scope com/acme     # dangerous call sites in your code
+jcgraph trace <M:sink-method>                 # reverse paths from a sink up to an entry point
+jcgraph taint --chain M:a,M:b --sink-api M:...   # verify data flow on one chain
 ```
 
-典型工作流:`sinks` 找危险点 → 对命中方法 `trace` 看是否从不可信入口可达 → `method`/`source`
-读反编译代码人工确认。trace 默认深度上限 12、路径上限 20,避免在巨型图上爆炸。
+`sinks` categories: `deserialize · exec · expr · file · jndi · redirect ·
+reflect · sql · ssrf · xxe`. `sources` categories: `http · net`.
 
-**污点验证 trace+taint。** `trace` 给的是**调用可达**的候选链(能调用到 ≠ 数据真的流过去)。
-`taint` 在此之上做**数据流验证**:对每个 sink 调用点反向取候选链,逐跳用 ASM 在方法内做字节码
-抽象解释(模拟操作数栈/局部变量的污点),把候选链筛成**不可信输入确实流到危险调用**的真实流。
+### Navigation
 
-```bash
-java -jar target/jcgraph.jar taint          # 所有类别的已验证数据流
-java -jar target/jcgraph.jar taint exec     # 只看某类
-#   == taint: 2 verified flows ... (checked 4 chains) ==
-#   [exec] (2)
-#     vuln/Demo#direct  ==> java/lang/Runtime#exec               <- 方法内 getParameter->exec
-#     vuln/Demo#entry -> vuln/Demo#run  ==> java/lang/Runtime#exec   <- 跨方法参数传递
+```
+jcgraph search  <query>                 # find symbols by name (FTS5)
+jcgraph def     <name>                   # symbol definition + descriptor
+jcgraph node    <id|name>                # exact node details / class outline
+jcgraph context <task>                   # compact context bundle for a task
+jcgraph callers <method|id>              # who calls this
+jcgraph callees <method|id>              # what this calls
+jcgraph impact  <method|id> --depth N    # reverse blast radius
 ```
 
-污点引擎的能力与近似:
-- **污点起点**:命中 source 规则的调用返回值(如 `getParameter()`)——贴合 web 场景;
-- **传播**:方法内逐指令(拼接、赋值、分支合并),跨方法靠"调用参数→形参"载荷传递;
-- **库函数传播**:`propagation.json`(~280 条:StringBuilder/String/容器/Map/Stream/反射/编解码…);
-- **净化**:`sanitizer.json`(转义、`PreparedStatement#setString`、`Pattern.quote` 等)切断污点;
-- **近似**:无堆/字段建模(对象字段间的传播靠库规则近似覆盖),所以 **`taint` 的 FAIL 是"未证明",不等于"安全"**。`taint` 用于把候选**降噪**(只报能证明的),`trace`/`sinks` 仍是高召回的兜底。
+### Source
 
-> 规则文件 `src/main/resources/{sinks.txt,propagation.json,sanitizer.json}` 可直接编辑扩充;
-> 污点引擎改编自 [jar-analyzer](https://github.com/jar-analyzer/jar-analyzer)(见下方许可证)。
-
-## MCP 服务
-
-通过 MCP(stdio JSON-RPC)把只读 API 暴露给 agent。先构建索引,再让 agent 连接:
-
-```bash
-java -jar target/jcgraph.jar serve --mcp --db jcgraph.db
+```
+jcgraph source  <class>                  # full class source (decompiled if bytecode)
+jcgraph method  <class> <name>           # one method's source
+jcgraph outline <class>                  # class skeleton: method ids + line ranges
+jcgraph grep    <pattern>                # literal text search over the .java mirror
+jcgraph files   [--origin o] [--language l] [--limit n]   # list indexed files
 ```
 
-工具名都带 `jcg_` 前缀,避免和 agent 自带的 grep/search/read 冲突:导航类
-`jcg_search`、`jcg_def`、`jcg_callers`、`jcg_callees`、`jcg_source`、`jcg_method`、
-`jcg_grep`,以及漏洞挖掘类 `jcg_sinks`、`jcg_sources`、`jcg_trace`、`jcg_taint`。其中
-`jcg_grep` 检索的是**被索引的 Java 项目**,不是本地文件系统。客户端配置示例(Claude Code /
-Tamamo 的 `mcp.json`):
+### PR / changed-files mode
+
+Scope any high-volume command to a review set:
+
+```
+jcgraph sinks exec --changed-files changed.txt   # only call sites in listed files
+jcgraph sinks exec --since HEAD~1                 # files changed since a git ref
+```
+
+`--changed-files` reads one path per line; `--since <ref>` runs
+`git diff --name-only <ref>...HEAD` in the working directory.
+
+`--json` is honored by: `sinks · sources · taint · callers · callees · impact ·
+grep`.
+
+## MCP
+
+```
+java -jar jcgraph.jar serve [--db <path>]
+```
+
+Runs as an MCP server over stdio (newline-delimited JSON-RPC 2.0). Tools are
+prefixed `jcg_` and mirror the CLI; high-volume tools accept `format: "json"`
+and a `changed_files` array for PR-scoped review. Register in Claude Code
+(`.mcp.json` in the project root):
 
 ```json
 {
   "mcpServers": {
     "jcgraph": {
       "command": "java",
-      "args": ["-jar", "/abs/path/target/jcgraph.jar", "serve", "--mcp", "--db", "/abs/path/jcgraph.db"]
+      "args": ["-jar", "/abs/path/target/jcgraph.jar", "serve", "--db", ".jcgraph/index.db"]
     }
   }
 }
 ```
 
-协议走 stdin/stdout;所有日志走 stderr。
+The server only **reads** an existing index — build it first with `index`. If
+the `java` on the client's PATH is not Java 8+, point `command` at an absolute
+JDK path.
 
-## 已知的 MVP 限制
+## Schema
 
-- 源码(`.java`)的调用边暂不生成(解析它们需要符号求解器);调用图来自字节码。源码贡献的是
-  结构、位置、方法体。
-- 调用图已做**多态解析**(OVERRIDES 边 + 查询时虚方法展开);污点传播(`taint`)已做到
-  **方法内 + 沿调用链跨方法**,但**无堆/字段建模**(对象字段间传播靠库规则近似)。因此
-  `taint` 的 FAIL 是"未证明"而非"安全";`trace`/`sinks` 保持高召回作兜底。下一步可加字段级
-  数据流与框架(Spring/MyBatis)入口建模。
-- 跨前端合并以 JVM 描述符为键。源码描述符是尽力而为(无类型解析),所以同时以 `.class` 和
-  `.java` 出现的类能在类级别干净合并;方法级合并仅在描述符对得上时才精确。
-- 字节码的全文 grep 能工作,是因为混合模式在索引时物化了反编译 `.java` 镜像;用
-  `--no-materialize` 时,字节码只检索常量池 `strings` 表。
-- 物化会在索引时反编译每个类(索引更慢、更占磁盘),但已**并行**执行且**支持中断续跑**
-  (见上文)。方法位置通过重新解析反编译 `.java` 恢复;无法解析的输出回退到按需反编译 + 定位。
-- 在 JDK 11+ 上,可把 `Decompiler` 换成 Vineflower,以额外获得 `bsm` 字节码↔源码行号映射。
+The graph is a SQLite database. It stores **coordinates and relationships, not
+bodies** — method/class source is read from `file_path` on demand (decompiled if
+the node came from bytecode). Two core tables:
 
-## 许可证
+- **nodes** — every class/interface/enum/annotation/method/field:
+  `id, kind, name, owner, descriptor, file_path, start_line, end_line,
+  entry_kind, synthetic`.
+- **edges** — relationships: `source, target, kind, line, provenance` where kind
+  is one of `contains | calls | extends | implements | overrides | references`.
 
-污点分析引擎(`io.jcgraph.taint.*`)改编自 [jar-analyzer](https://github.com/jar-analyzer/jar-analyzer)
-(作者 4ra1n / Jar Analyzer Team),原项目为 **GPLv3**。因此引入这部分代码后,本项目的衍生
-分发须遵循 **GPLv3**。相关源文件头部保留了原始版权声明。规则数据 `propagation.json` /
-`sanitizer.json` 同样来自该项目。
+Plus `files` (indexed-file metadata for `status`/`sync`), `meta` (index config),
+`schema_versions`, and `nodes_fts` (an FTS5 virtual table over node name / owner
+/ descriptor backing `search`). SQLite materializes the FTS index as a handful
+of `nodes_fts_*` shadow tables — ignore them; you only ever query `nodes_fts`.
+
+Two columns carry the security signal:
+
+- **`entry_kind`** — `HTTP | SERVLET | FILTER | MQ | MAIN | ASYNC`, or null for
+  non-entries. Set from annotations (`@RestController` / `@*Mapping`, JAX-RS,
+  Kafka/Rabbit/JMS listeners, `@Scheduled`/`@Async`), from overrides
+  (`HttpServlet#doGet`, `Filter#doFilter`, `Runnable#run`, `Callable#call`), and
+  from `main(String[])` signatures. Both `javax.*` and `jakarta.*` are
+  recognized.
+- **`synthetic`** — `1` for compiler-generated members (`ACC_SYNTHETIC` /
+  `ACC_BRIDGE`, plus `access$*` accessors and `val$` / `this$` capture fields).
+  Sink/source/overview queries hide these by default so an agent sees only real
+  code.
+
+Node ids are deterministic and re-feedable:
+
+- `C:<internal-name>` — a class, e.g. `C:com/acme/Foo`
+- `M:<owner>#<name><descriptor>` — a method, e.g. `M:com/acme/Foo#bar(Ljava/lang/String;)V`
+- `F:<owner>#<name>` — a field
+
+Because ids are derived from descriptors (not autoincremented), the bytecode and
+source frontends converge on the same row: source wins for file/positions,
+bytecode fills descriptors.
+
+## How it works
+
+1. **Collect** (`FileCollector`) — walk the input, unpack jars/wars/jmods,
+   recurse nested jars, derive each class's internal name from its bytes, and
+   classify every entry. Duplicate classes across jars are detected; the first
+   wins and the shadowed copies are reported in `status`.
+2. **Extract** two ways into one schema:
+   - `BytecodeExtractor` (ASM) — the authoritative structure: nodes, call edges,
+     entry classification from annotations, synthetic flagging.
+   - `SourceExtractor` (JavaParser) — the same schema from `.java`, with a
+     second pass that links cross-class `calls` edges by name.
+3. **Materialize** (`Materializer` + CFR) — decompile bytecode to a `.java`
+   mirror so an agent can read method bodies, then re-parse to enrich node line
+   ranges. The graph points at these files; `grep` scans them.
+4. **Link** (`CallGraphLinker`) — resolve polymorphism into `overrides` edges so
+   the call graph can be expanded through interfaces/abstract methods at query
+   time (`callers`/`callees`/`trace` flow through implementations).
+5. **Query** — `NavigationService` (structure) and `SecurityService`
+   (sink/trace/taint) read the graph; `ContentResolver` reads bodies on demand.
+
+## Taint
+
+The taint analyzer is a **chain verifier, not a scanner.** Given a specific call
+chain, it runs per-method abstract interpretation over the operand stack and
+locals (no heap/field model) to confirm whether a tainted argument actually
+reaches the sink:
+
+```
+jcgraph taint --chain M:a,M:b,M:c --sink-api M:javax/naming/Context#lookup
+```
+
+It returns `PASS` / `FAIL` plus a readable step log and any sanitizers hit. A
+`FAIL` is informative — the log says *where* the flow stopped (e.g. "taint did
+not reach next at hop 0"), which usually points at a heap/field crossing the
+analyzer doesn't model. `FAIL` means "not proven," not "safe."
+
+Use it to **verify a chain you already triaged** with `trace` — not to discover
+flows from scratch. A legacy scan mode (`jcgraph taint <category>`) exists and is
+tunable (`--depth`, `--paths`, `--budget`), but it returns ~0 verified flows on
+DI/framework-heavy code where data crosses fields; `trace` + `sinks` are the
+discovery primitives.
+
+## Status
+
+Done: call graph, source/sink/sanitizer catalog, reverse trace, chain verifier,
+entry-point classification, synthetic filtering, parallel taint, JSON + scope +
+changed-files filtering, MCP server.
+
+Known limits (see [docs/IMPLEMENTATION_GAPS.md](docs/IMPLEMENTATION_GAPS.md) for
+the full list): source `.java` call edges and descriptors are best-effort
+without a symbol solver (the call graph's source of truth is bytecode);
+decompiled-method location matches on name + arity, so same-arity overloads can
+collide; `sync` rebuilds rather than incrementally updates. Heap-aware data-flow
+scanning is deliberately out of scope (multi-week IFDS engineering) — the design
+instead gives an agent precise, composable primitives and an honest, explainable
+verifier.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the developer-facing module
+map and extension recipes.
+
+## License
+
+(unspecified)

@@ -21,4 +21,16 @@ public class Edge {
         e.provenance = provenance;
         return e;
     }
+
+    /** Source-side call/reference edge with a line number. */
+    public static Edge call(String source, String target, int line, String provenance, EdgeKind kind) {
+        Edge e = new Edge();
+        e.source = source;
+        e.target = target;
+        e.kind = kind;
+        e.line = line;
+        e.origin = Origin.SOURCE;
+        e.provenance = provenance;
+        return e;
+    }
 }

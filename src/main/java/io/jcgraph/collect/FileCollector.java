@@ -8,8 +8,10 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -32,7 +34,8 @@ public class FileCollector {
 
     private final Path workDir;
     private final Collected result = new Collected();
-    private final Set<String> seenClasses = new HashSet<>();
+    /** internal name -> container it was first accepted from (for duplicate provenance). */
+    private final Map<String, String> seenClasses = new HashMap<>();
     private final Set<Path> seenSources = new HashSet<>();
 
     public FileCollector(Path workDir) {
@@ -134,9 +137,14 @@ public class FileCollector {
             // unsupported class version / corrupt -> skip
             return;
         }
-        if (!seenClasses.add(internal)) {
+        String firstContainer = seenClasses.get(internal);
+        if (firstContainer != null || seenClasses.containsKey(internal)) {
+            // Duplicate (same internal name from a different jar / nested archive).
+            // Preserve provenance so an analyst can see version shadowing in fat-jars.
+            result.duplicates.add(new Collected.DuplicateClass(internal, container, firstContainer));
             return;
         }
+        seenClasses.put(internal, container);
         Path out = workDir.resolve(internal + ".class");
         writeBytes(out, bytes);
         result.classes.add(new Collected.ClassUnit(internal, out.toAbsolutePath(), container));

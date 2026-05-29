@@ -11,22 +11,24 @@ public class Node {
     public String name;
     public String owner;       // declaring class internal name, null for top-level class nodes
     public String descriptor;  // JVM descriptor for methods/fields
-    public String signature;
-    public int access;
+    /** ASM/JVM access flags; kept in-memory only (CallGraphLinker reads ACC_STATIC/PRIVATE). */
+    public transient int access;
     public String filePath;
-    public Origin origin;
     public int startLine;
     public int endLine;
+    /** Entry classification: HTTP|SERVLET|FILTER|MQ|MAIN|ASYNC, or null for non-entries. */
+    public String entryKind;
+    /** 1 if ACC_SYNTHETIC or ACC_BRIDGE — bridge methods, compiler accessors, capture fields. */
+    public int synthetic;
 
     public Node() {
     }
 
-    public static Node of(String id, NodeKind kind, String name, Origin origin) {
+    public static Node of(String id, NodeKind kind, String name) {
         Node n = new Node();
         n.id = id;
         n.kind = kind;
         n.name = name;
-        n.origin = origin;
         return n;
     }
 }

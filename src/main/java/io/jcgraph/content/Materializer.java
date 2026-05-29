@@ -9,9 +9,9 @@ import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import io.jcgraph.model.Descriptors;
-import io.jcgraph.model.Ids;
 import io.jcgraph.model.Node;
 import io.jcgraph.model.NodeKind;
+import io.jcgraph.model.SourceDescriptors;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -198,7 +198,20 @@ public class Materializer {
             if (isType(n)) {
                 rng = r.types.get(n.id.substring(2));
             } else if (n.kind == NodeKind.METHOD) {
-                rng = r.methods.get(n.owner + "#" + n.name + "#" + Descriptors.paramCount(n.descriptor));
+                // Prefer full-descriptor match (disambiguates overloads with the same
+                // paramCount); fall back to paramCount only when descriptor is unknown
+                // OR when the descriptor key has no match (decompiler-side resolution
+                // mismatch). If paramCount key collides, leave unresolved rather than
+                // pick at random.
+                String descKey = n.owner + "#" + n.name + "#" + (n.descriptor == null ? "" : n.descriptor);
+                rng = r.methodsByDesc.get(descKey);
+                if (rng == null) {
+                    String pcKey = n.owner + "#" + n.name + "#" + Descriptors.paramCount(n.descriptor);
+                    Integer ambiguousCount = r.methodAmbiguity.get(pcKey);
+                    if (ambiguousCount != null && ambiguousCount == 1) {
+                        rng = r.methods.get(pcKey);
+                    }
+                }
             } else if (n.kind == NodeKind.FIELD) {
                 rng = r.fields.get(n.owner + "#" + n.name);
             }
@@ -224,20 +237,26 @@ public class Materializer {
 
     private static final class Ranges {
         final Map<String, int[]> types = new HashMap<>();
+        // primary key: owner#name#descriptor (disambiguates overloads)
+        final Map<String, int[]> methodsByDesc = new HashMap<>();
+        // legacy paramCount key, used only when 1 candidate exists for that count
         final Map<String, int[]> methods = new HashMap<>();
+        final Map<String, Integer> methodAmbiguity = new HashMap<>();
         final Map<String, int[]> fields = new HashMap<>();
     }
 
     private Ranges collectRanges(CompilationUnit cu) {
         Ranges r = new Ranges();
         String pkg = cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
+        SourceDescriptors sd = SourceDescriptors.of(cu);
         for (TypeDeclaration<?> td : cu.getTypes()) {
-            collectType(td, null, pkg, r);
+            collectType(td, null, pkg, sd, r);
         }
         return r;
     }
 
-    private void collectType(TypeDeclaration<?> td, String enclosing, String pkg, Ranges r) {
+    private void collectType(TypeDeclaration<?> td, String enclosing, String pkg,
+                             SourceDescriptors sd, Ranges r) {
         String name = td.getNameAsString();
         String internal = enclosing == null
                 ? (pkg.isEmpty() ? name : pkg.replace('.', '/') + "/" + name)
@@ -245,14 +264,26 @@ public class Materializer {
 
         td.getRange().ifPresent(rg -> r.types.put(internal, new int[]{rg.begin.line, rg.end.line}));
         for (MethodDeclaration md : td.getMethods()) {
-            md.getRange().ifPresent(rg -> r.methods.put(
-                    internal + "#" + md.getNameAsString() + "#" + md.getParameters().size(),
-                    new int[]{rg.begin.line, rg.end.line}));
+            md.getRange().ifPresent(rg -> {
+                int[] range = new int[]{rg.begin.line, rg.end.line};
+                String descKey = internal + "#" + md.getNameAsString() + "#"
+                        + sd.methodDescriptor(md.getParameters(), md.getType());
+                r.methodsByDesc.put(descKey, range);
+                String pcKey = internal + "#" + md.getNameAsString() + "#" + md.getParameters().size();
+                r.methods.put(pcKey, range);
+                r.methodAmbiguity.merge(pcKey, 1, Integer::sum);
+            });
         }
         for (ConstructorDeclaration cd : td.getConstructors()) {
-            cd.getRange().ifPresent(rg -> r.methods.put(
-                    internal + "#<init>#" + cd.getParameters().size(),
-                    new int[]{rg.begin.line, rg.end.line}));
+            cd.getRange().ifPresent(rg -> {
+                int[] range = new int[]{rg.begin.line, rg.end.line};
+                String descKey = internal + "#<init>#"
+                        + sd.methodDescriptor(cd.getParameters(), null);
+                r.methodsByDesc.put(descKey, range);
+                String pcKey = internal + "#<init>#" + cd.getParameters().size();
+                r.methods.put(pcKey, range);
+                r.methodAmbiguity.merge(pcKey, 1, Integer::sum);
+            });
         }
         for (FieldDeclaration fd : td.getFields()) {
             for (VariableDeclarator v : fd.getVariables()) {
@@ -263,7 +294,7 @@ public class Materializer {
         }
         td.getMembers().forEach(m -> {
             if (m instanceof TypeDeclaration) {
-                collectType((TypeDeclaration<?>) m, internal, pkg, r);
+                collectType((TypeDeclaration<?>) m, internal, pkg, sd, r);
             }
         });
     }

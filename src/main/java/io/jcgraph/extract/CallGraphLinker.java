@@ -6,6 +6,7 @@ import io.jcgraph.model.Ids;
 import io.jcgraph.model.Node;
 import io.jcgraph.model.NodeKind;
 import io.jcgraph.model.Origin;
+import io.jcgraph.security.EntryRules;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -76,6 +77,16 @@ public final class CallGraphLinker {
                 if (sigs != null && sigs.contains(sigKey)) {
                     overrides.add(Edge.of(n.id, Ids.method(ancestor, n.name, n.descriptor),
                             EdgeKind.OVERRIDES, Origin.BYTECODE, "hierarchy"));
+                }
+                // Override-based entry tag: e.g. a method that overrides
+                // HttpServlet#doGet is a SERVLET handler regardless of annotations.
+                // Walks all ancestors (not just indexed ones) so framework bases
+                // outside the index still trigger classification.
+                if (n.entryKind == null) {
+                    String inherited = EntryRules.fromOverride(ancestor, n.name, n.descriptor);
+                    if (inherited != null) {
+                        n.entryKind = inherited;
+                    }
                 }
             }
         }

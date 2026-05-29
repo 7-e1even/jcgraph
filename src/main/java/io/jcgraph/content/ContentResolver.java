@@ -7,6 +7,7 @@ import com.github.javaparser.ast.body.MethodDeclaration;
 import io.jcgraph.model.Descriptors;
 import io.jcgraph.model.Ids;
 import io.jcgraph.model.Node;
+import io.jcgraph.model.SourceDescriptors;
 import io.jcgraph.store.GraphStore;
 
 import java.nio.charset.StandardCharsets;
@@ -57,10 +58,10 @@ public class ContentResolver {
         if (m.filePath != null && m.filePath.endsWith(".java") && m.startLine > 0) {
             return slice(m.filePath, m.startLine, m.endLine);
         }
-        // fallback: not materialized / unmatched -> decompile outer .class + locate
+        // not materialized / unmatched -> decompile outer .class and locate by descriptor
         String classFile = outerClassFile(m.owner, m.filePath);
         String classSrc = decompiler.decompile(classFile);
-        String located = locateMethod(classSrc, m.name, Descriptors.paramCount(m.descriptor));
+        String located = locateMethod(classSrc, m.name, m.descriptor);
         if (located != null) {
             return located;
         }
@@ -83,25 +84,54 @@ public class ContentResolver {
         return fallback;
     }
 
-    private static String locateMethod(String classSrc, String methodName, int paramCount) {
+    /**
+     * Locate a method body in decompiled output. Matches by descriptor first; if
+     * none match (e.g. source-side type resolution mismatch), falls back to
+     * name+paramCount only when a single candidate exists — same-name same-paramCount
+     * overloads return a clear ambiguity marker rather than silently picking one.
+     */
+    private static String locateMethod(String classSrc, String methodName, String descriptor) {
         CompilationUnit cu;
         try {
             cu = StaticJavaParser.parse(classSrc);
         } catch (Exception e) {
             return null;
         }
+        SourceDescriptors sd = SourceDescriptors.of(cu);
+        int paramCount = Descriptors.paramCount(descriptor);
+        java.util.List<String> candidates = new java.util.ArrayList<>();
         if ("<init>".equals(methodName)) {
             for (ConstructorDeclaration c : cu.findAll(ConstructorDeclaration.class)) {
-                if (c.getParameters().size() == paramCount) {
+                if (c.getParameters().size() != paramCount) {
+                    continue;
+                }
+                String desc = sd.methodDescriptor(c.getParameters(), null);
+                if (descriptor != null && descriptor.equals(desc)) {
                     return c.toString();
                 }
+                candidates.add(c.toString());
             }
         } else {
             for (MethodDeclaration md : cu.findAll(MethodDeclaration.class)) {
-                if (md.getNameAsString().equals(methodName) && md.getParameters().size() == paramCount) {
+                if (!md.getNameAsString().equals(methodName)
+                        || md.getParameters().size() != paramCount) {
+                    continue;
+                }
+                String desc = sd.methodDescriptor(md.getParameters(), md.getType());
+                if (descriptor != null && descriptor.equals(desc)) {
                     return md.toString();
                 }
+                candidates.add(md.toString());
             }
+        }
+        if (candidates.size() == 1) {
+            return candidates.get(0);
+        }
+        if (candidates.size() > 1) {
+            return "// (ambiguous: " + candidates.size() + " overloads named "
+                    + methodName + " take " + paramCount + " params and source-side type "
+                    + "resolution could not match descriptor " + descriptor
+                    + "; showing first candidate)\n\n" + candidates.get(0);
         }
         return null;
     }

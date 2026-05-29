@@ -108,7 +108,9 @@ public class TaintMethodAdapter extends JVMRuntimeAdapter<String> {
                     if (anyArgTainted(stack, argCount)) {
                         super.visitMethodInsn(opcode, calleeOwner, calleeName, calleeDesc, itf);
                         scrubReturnValue(calleeDesc);
-                        sink.emit("sanitizer (all params): " + calleeOwner + "#" + calleeName);
+                        String id = calleeOwner + "#" + calleeName + calleeDesc;
+                        sink.emit("sanitizer (all params): " + id);
+                        sink.recordSanitizer(id);
                         return;
                     }
                 } else {
@@ -118,7 +120,9 @@ public class TaintMethodAdapter extends JVMRuntimeAdapter<String> {
                         if (slot != null && slot.contains(TAINT)) {
                             super.visitMethodInsn(opcode, calleeOwner, calleeName, calleeDesc, itf);
                             scrubReturnValue(calleeDesc);
-                            sink.emit("sanitizer: " + calleeOwner + "#" + calleeName);
+                            String id = calleeOwner + "#" + calleeName + calleeDesc;
+                            sink.emit("sanitizer: " + id);
+                            sink.recordSanitizer(id);
                             return;
                         }
                     }

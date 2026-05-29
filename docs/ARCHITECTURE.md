@@ -79,7 +79,9 @@ One package per responsibility under `src/main/java/io/jcgraph/`:
 - `nodes(id, kind, name, owner, descriptor, signature, access, file_path, origin, start_line, end_line)`
 - `edges(source, target, kind, line, origin, provenance)` — PK `(source,target,kind)`
 - `strings(id, owner, method, value, origin)` — constant-pool + source literals (cheap grep)
-- `files(path, origin, container, language)` — every on-disk artifact (drives `javaFiles()`)
+- `files(path, origin, container, language, content_hash, size, modified_at, indexed_at, errors)` — every on-disk artifact (drives `javaFiles()`, `status`, and basic `sync` staleness checks)
+- `nodes_fts(id, name, owner, descriptor, signature)` — FTS5 search index maintained by `GraphStore.writeBatch`
+- `schema_versions(version, applied_at, description)` — schema provenance for future migrations
 - `meta(key, value)` — `input`, `work_dir`, `indexed_at`
 
 ### Node ids (`Ids`) — the cross-frontend key
@@ -165,9 +167,12 @@ mvn -q clean package
 ```
 The produced jar still runs fine on the JRE 8 (the project targets Java 8).
 
-### Smoke test (no unit tests yet)
+### Tests and smoke test
 ```bash
+mvn -q test
 java -jar target/jcgraph.jar index target/classes --db smoke.db   # self-index
+java -jar target/jcgraph.jar status --db smoke.db
+java -jar target/jcgraph.jar context NavigationService --db smoke.db
 java -jar target/jcgraph.jar def decompile --db smoke.db
 java -jar target/jcgraph.jar method io.jcgraph.model.Descriptors paramCount --db smoke.db
 java -jar target/jcgraph.jar grep PRAGMA --db smoke.db
@@ -190,6 +195,6 @@ Limits (also in README):
 
 Candidate next steps:
 - **(A)** JavaParser SymbolSolver → real source call edges + precise descriptors.
-- **(B)** Parallelize `Materializer` (decompilation is the bottleneck).
-- **(C)** Incremental index via `files.content_hash` (only re-index changed classes).
+- **(B)** True incremental index/update (today `sync` detects staleness and rebuilds the index).
+- **(C)** Field/heap modeling for deeper taint propagation.
 - **(D)** Live integration test inside Tamamo as an MCP server.

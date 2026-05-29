@@ -3,22 +3,38 @@
 -- NOT stored here; they are read from file_path (source) or decompiled on demand
 -- (bytecode). See io.jcgraph.content.ContentResolver.
 
+CREATE TABLE IF NOT EXISTS schema_versions (
+    version     INTEGER PRIMARY KEY,
+    applied_at  INTEGER NOT NULL,
+    description TEXT
+);
+INSERT OR IGNORE INTO schema_versions(version, applied_at, description)
+VALUES(1, strftime('%s', 'now') * 1000, 'Initial schema');
+
 CREATE TABLE IF NOT EXISTS nodes (
     id          TEXT PRIMARY KEY,   -- C:<internal> | M:<owner>#<name><desc> | F:<owner>#<name>
     kind        TEXT NOT NULL,      -- class|interface|enum|annotation|method|field
     name        TEXT NOT NULL,      -- simple name
     owner       TEXT,               -- declaring class internal name (slashes)
     descriptor  TEXT,               -- JVM descriptor for methods/fields
-    signature   TEXT,               -- human-readable signature
-    access      INTEGER DEFAULT 0,  -- ASM/JVM access flags
     file_path   TEXT,               -- abs path to .class (bytecode) or .java (source)
-    origin      TEXT NOT NULL,      -- bytecode|source
     start_line  INTEGER DEFAULT 0,
-    end_line    INTEGER DEFAULT 0
+    end_line    INTEGER DEFAULT 0,
+    entry_kind  TEXT,               -- HTTP|SERVLET|FILTER|MQ|MAIN|ASYNC, null for non-entries
+    synthetic   INTEGER DEFAULT 0   -- 1 if ACC_SYNTHETIC|ACC_BRIDGE (compiler-generated)
 );
-CREATE INDEX IF NOT EXISTS idx_nodes_name  ON nodes(name);
-CREATE INDEX IF NOT EXISTS idx_nodes_kind  ON nodes(kind);
-CREATE INDEX IF NOT EXISTS idx_nodes_owner ON nodes(owner);
+CREATE INDEX IF NOT EXISTS idx_nodes_name        ON nodes(name);
+CREATE INDEX IF NOT EXISTS idx_nodes_kind        ON nodes(kind);
+CREATE INDEX IF NOT EXISTS idx_nodes_owner       ON nodes(owner);
+CREATE INDEX IF NOT EXISTS idx_nodes_entry_kind  ON nodes(entry_kind);
+CREATE INDEX IF NOT EXISTS idx_nodes_synthetic   ON nodes(synthetic);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+    id UNINDEXED,
+    name,
+    owner,
+    descriptor
+);
 
 CREATE TABLE IF NOT EXISTS edges (
     source     TEXT NOT NULL,
@@ -32,23 +48,20 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target, kind);
 
--- string constants pulled from the bytecode constant pool (cheap literal grep
--- without decompiling), and string literals from source.
-CREATE TABLE IF NOT EXISTS strings (
-    id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner  TEXT,   -- class internal name
-    method TEXT,   -- method name+desc where the literal appears
-    value  TEXT NOT NULL,
-    origin TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_strings_value ON strings(value);
-
 CREATE TABLE IF NOT EXISTS files (
-    path        TEXT PRIMARY KEY,   -- abs path on disk (extracted .class or .java)
-    origin      TEXT,
-    container   TEXT,               -- original jar/war/jmod it came from (if any)
-    language    TEXT
+    path         TEXT PRIMARY KEY,   -- abs path on disk (extracted .class or .java)
+    origin       TEXT,
+    container    TEXT,               -- original jar/war/jmod it came from (if any)
+    language     TEXT,
+    content_hash TEXT,
+    size         INTEGER DEFAULT 0,
+    modified_at  INTEGER DEFAULT 0,
+    indexed_at   INTEGER DEFAULT 0,
+    errors       TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_files_origin ON files(origin);
+CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
+CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,

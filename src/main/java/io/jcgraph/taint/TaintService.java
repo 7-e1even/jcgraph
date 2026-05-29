@@ -84,11 +84,11 @@ public class TaintService {
             }
             if (exit == null || !exit.hasTaint()) {
                 sink.emit("taint did not reach next at hop " + i + " (" + cur + ")");
-                return new TaintResult(false, sink.getLog());
+                return new TaintResult(false, sink.getLog(), sink.getSanitizers());
             }
             entry = exit;
         }
         sink.emit("taint reached the sink");
-        return new TaintResult(true, sink.getLog());
+        return new TaintResult(true, sink.getLog(), sink.getSanitizers());
     }
 }
